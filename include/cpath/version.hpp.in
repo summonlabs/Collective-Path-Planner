@@ -1,0 +1,40 @@
+// Collective Path Planner - version and build identification.
+//
+// Generated from include/cpath/version.hpp.in by CMake. Do not edit the
+// generated copy.
+//
+// Copyright 2026 Summon Software Labs.
+// Licensed under the Apache License, Version 2.0 (see LICENSE).
+#ifndef CPATH_VERSION_HPP
+#define CPATH_VERSION_HPP
+
+#include <cstdint>
+#include <string>
+
+#include "cpath/limits.hpp"
+
+namespace cpath {
+
+inline constexpr int kVersionMajor = @PROJECT_VERSION_MAJOR@;
+inline constexpr int kVersionMinor = @PROJECT_VERSION_MINOR@;
+inline constexpr int kVersionPatch = @PROJECT_VERSION_PATCH@;
+inline constexpr const char* kVersionString = "@PROJECT_VERSION@";
+inline constexpr const char* kProjectName = "Collective Path Planner";
+inline constexpr const char* kCopyrightNotice = "Copyright 2026 Summon Software Labs.";
+inline constexpr const char* kBuildType = "@CMAKE_BUILD_TYPE@";
+inline constexpr const char* kCompilerId = "@CPATH_COMPILER_ID@";
+inline constexpr const char* kCompilerVersion = "@CPATH_COMPILER_VERSION@";
+inline constexpr const char* kBuildSystem = "@CMAKE_GENERATOR@";
+inline constexpr bool kSanitizersEnabled = @CPATH_SANITIZERS_ENABLED@;
+inline constexpr bool kStoreFormatStable = true;
+
+// "1.0.0"
+const char* version_string() noexcept;
+
+// One-line identification of this exact build, used by --version output and by
+// every audit record this library writes.
+std::string build_summary();
+
+}  // namespace cpath
+
+#endif  // CPATH_VERSION_HPP

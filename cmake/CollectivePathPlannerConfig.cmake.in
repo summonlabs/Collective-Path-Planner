@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if(WIN32)
+  # Winsock is linked by the exported target; nothing else to find.
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/CollectivePathPlannerTargets.cmake")
+
+check_required_components(CollectivePathPlanner)
+
+set(CollectivePathPlanner_VERSION "@PROJECT_VERSION@")
+set(CollectivePathPlanner_IS_TOP_LEVEL OFF)
