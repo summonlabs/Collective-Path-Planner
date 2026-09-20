@@ -197,6 +197,31 @@ Every fallible entry point returns `Status` or `Result<T>` carrying a stable
 * the capacity the plan would consume per physical edge - explicitly a proposal,
   not a reservation.
 
+## Planning contract (summary)
+
+The planner solves one declared problem class and is explicit about what it can
+prove. The full statement is in `docs/DESIGN.md` section 9; the headline
+properties are:
+
+* **Never a false infeasibility.** `DenialKind::kProvenInfeasible` is emitted only
+  when infeasibility was actually proven, for all constraints at once - by
+  reachability, an exact minimum-hop distance, a max-flow bound, an exhaustive
+  path set, or an exhaustive assignment search. Anything else is
+  `DenialKind::kSearchLimitReached`, which is INDETERMINATE and makes no claim
+  about existence.
+* **Simple paths only.** No physical node and no physical edge appears twice in
+  a path.
+* **A deterministic, globally coherent objective.** Hard constraints first, then
+  total cost, then sibling domain conflicts, then the largest single path cost,
+  then capacity headroom, then a canonical tie-break. The same total order is
+  used for partial comparisons, so the result never depends on container
+  iteration, hash order, thread scheduling or candidate discovery order.
+  Identical canonical requests produce byte-identical plans.
+* **Global capacity decisions.** Candidate generation for a logical edge never
+  depends on this request's other commitments, and the chosen sets are resolved
+  together under the whole-request capacity constraint, so adding usable
+  unconstrained fabric resources cannot withdraw a feasible mapping.
+
 ## Authority rules
 
 * A plan binds all five generations. `assess_freshness` classifies it as
@@ -239,14 +264,16 @@ reserved words. Full layout: `include/cpath/wire.hpp`.
 
 ## Tests
 
-Nine suites, each a separate executable and a separate CTest entry, so a failure
-localises to one proof surface:
+Eleven suites, each a separate executable and a separate CTest entry, so a
+failure localises to one proof surface:
 
 | Suite | What it proves |
 | --- | --- |
 | `unit` | identities, canonical encoding, digests, fabric and collective validation, policy validation, DSL round-trips, freshness classification, plan comparison |
 | `integration` | the whole public pipeline: text -> request -> plan -> validation -> rendering -> record round-trip, determinism, canonical equivalence, staleness |
 | `property` | seeded randomized topologies with reproduction; every promised plan invariant re-checked after each randomized step |
+| `algorithm` | algorithmic adversarial families: cheapest-first traps, locally-expensive-but-globally-necessary routes, candidate-pool truncation traps, cyclic graphs that tempt walk generation, symmetric ties, parallel links, bottleneck cuts, domain traps, long narrow graphs at the hop bound, additional irrelevant versus additional beneficial edges, canonical order independence, saturated cost arithmetic |
+| `reference` | differential testing against a deliberately slow exact reference solver on bounded randomized instances: production plans are valid, proven infeasibility is sound, a reference solution always yields either a production plan or an explicit INDETERMINATE result, and claimed optimality matches the reference objective |
 | `adversarial` | truncation and single-byte mutation at every offset, hostile documents, discontinuous, asymmetric, oversubscribed, duplicate-link, zero-capacity, cyclic-domain, stale-generation and huge-cost fabrics, search-budget exhaustion |
 | `persistence` | record codec rejections, store lifecycle, restart fencing, revalidation classification, bounded growth, on-disk corruption, torn tails, erase and bounds |
 | `protocol` | frame and payload codecs, every rejection code, never-crash inputs, and a real loopback TCP session against a live coordinator |
@@ -263,10 +290,14 @@ ctest --test-dir build/release --output-on-failure
 ./build/release/tests/cpath_tests_property --seed=7 --verbose
 ```
 
-A randomized failure prints the seed that produced it. 141 tests are registered
-across the nine suites (unit 47, adversarial 24, protocol 21, persistence 11,
-integration 9, property 8, concurrency 8, multiprocess 8, scale 5), and the whole
-run takes about 20 seconds in Release.
+A randomized failure prints the seed that produced it. 166 tests are registered
+across the eleven suites (unit 47, adversarial 25, protocol 21, algorithm 18,
+persistence 11, integration 9, property 8, concurrency 8, multiprocess 8,
+reference 6, scale 5), and the whole run takes about 10 seconds in Release.
+
+The reference suite alone drives 3,200 bounded randomized instances through both
+the production planner and the exact reference solver, and the property suite
+runs 2,500 seeded randomized iterations across ten families.
 
 Every configuration is exercised before a release: a Release build, a Debug
 build, and a build with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
@@ -335,17 +366,31 @@ and lock-ordering rules; and `docs/DSL.md` for the input format.
 
 * No physical hardware was exercised. Every fabric in the tests and examples is
   SYNTHETIC, and no path here is evidence about a real network.
-* The planner is bounded, not complete. For disjointness it always either finds a
-  satisfying set or names the exact bound a max-flow proves; for a combination of
-  hop limits, optional node-disjointness and required domain diversity it
-  searches a bounded candidate pool and refuses precisely rather than partially
-  when the pool is exhausted. A refusal therefore means "no admissible mapping
-  was found within the documented bounds", and the denial text says which bound
-  was reached.
-* Paths are walks in the hop-limited state space rather than strictly simple
-  paths. A repeated physical node is only reachable when the policy permits it,
-  and disjointness requirements then reject the combination, but the search does
-  not forbid a cycle by construction.
+* **What a denial means.** Every denial carries a `DenialKind`.
+  `kProvenInfeasible` means no mapping exists and the planner proved it, from
+  reachability, an exact minimum-hop distance, a max-flow bound, an exhaustive
+  path set or an exhaustive assignment search. `kSearchLimitReached` means the
+  search stopped at one of the declared bounds and the result is INDETERMINATE -
+  it is never a claim that no mapping exists. `kInvalidRequest` and
+  `kStaleInput` mean the request itself was unusable.
+* **What is not proven optimal.** `PlanningOutcome::optimal` is true only when
+  every logical edge's feasible path set was enumerated in full within
+  `max_exhaustive_paths` and the k-subset and global assignment searches both
+  ran to exhaustion. When it is false the plan is valid, deterministic and
+  byte-identical for identical inputs, but a better mapping may exist outside the
+  search bounds. Reaching a bound costs proof strength, never feasibility: the
+  heuristic pool still produces a plan.
+* **Simple paths.** Every emitted path is a simple path; no physical node and no
+  physical edge appears twice. This is guaranteed by the search order, checked
+  when a candidate is materialised, and re-derived independently by
+  `validate_plan`.
+* **Global capacity, not greedy commitment.** A logical edge's candidates are
+  generated against the fabric's spare capacity only, never against this
+  request's own earlier commitments. The chosen sets are then checked together,
+  and a conflicting assignment is resolved by searching the per-logical-edge
+  alternatives under the whole-request capacity constraint. Adding usable
+  unconstrained fabric resources therefore cannot turn a feasible request into an
+  infeasibility claim.
 * A plan proposes capacity. It does not reserve it, and nothing here verifies
   that the proposal was ever admitted.
 * Addresses are literal IPv4 or `localhost`. The transport is deliberately

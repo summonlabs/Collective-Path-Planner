@@ -128,6 +128,16 @@ const char* code_symbol(ErrorCode code) noexcept {
   return "unknown";
 }
 
+bool is_defined_error_code(std::uint32_t raw) noexcept {
+  const auto value = static_cast<std::uint16_t>(raw);
+  for (const CodeEntry& entry : kCodeTable) {
+    if (static_cast<std::uint16_t>(entry.code) == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
 ErrorCategory category_of(ErrorCode code) noexcept {
   const auto raw = static_cast<std::uint16_t>(code);
   if (raw == 0) {

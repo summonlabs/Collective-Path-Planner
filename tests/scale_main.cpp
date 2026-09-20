@@ -249,9 +249,11 @@ CPATH_TEST(Scale, large_fabric_and_doubling_stay_inside_the_search_budget) {
     }
     check_plan_basics(*outcome.plan, request.value(), "grid");
     expansions[variant] = outcome.search_expansions;
-    std::printf("SYNTHETIC scale grid %zux%zu: nodes=%zu edges=%zu expansions=%zu wall=%.1f ms\n",
+    std::printf("SYNTHETIC scale grid %zux%zu: nodes=%zu edges=%zu expansions=%zu enumeration=%zu "
+                "combinations=%zu global_nodes=%zu optimal=%d wall=%.1f ms\n",
                 widths[variant], heights[variant], nodes[variant], edges[variant], expansions[variant],
-                elapsed[variant]);
+                outcome.enumeration_steps, outcome.combination_steps, outcome.global_search_nodes,
+                outcome.optimal ? 1 : 0, elapsed[variant]);
   }
 
   CPATH_CHECK(nodes[0] >= 4000u);
@@ -308,14 +310,44 @@ CPATH_TEST(Scale, exhausted_search_budget_is_refused_precisely) {
     const Clock::time_point start = Clock::now();
     const cp::PlanningOutcome outcome = cp::plan_collective(request.value());
     const double elapsed = millis_since(start);
-    std::printf("SYNTHETIC scale tiny budget: %s expansions=%zu wall=%.1f ms\n",
-                cp::code_symbol(outcome.primary_code()), outcome.search_expansions, elapsed);
+    std::printf("SYNTHETIC scale tiny budget: %s kind=%s expansions=%zu enumeration=%zu wall=%.1f ms\n",
+                cp::code_symbol(outcome.primary_code()), cp::to_string(outcome.primary_kind()),
+                outcome.search_expansions, outcome.enumeration_steps, elapsed);
     CPATH_CHECK(!outcome.ok());
     CPATH_CHECK(!outcome.plan.has_value());
-    CPATH_CHECK_EQ(std::string(cp::code_symbol(outcome.primary_code())),
-                   std::string("search_budget_exceeded"));
-    CPATH_CHECK(outcome.search_expansions <= 32u);
     CPATH_CHECK(!outcome.denials.empty());
+    // A boundary result must be one of exactly two things: a proof that no
+    // mapping exists, or an explicit statement that the search stopped before
+    // deciding. It must never be an unproven infeasibility claim.
+    CPATH_CHECK(outcome.indeterminate() || outcome.proven_infeasible());
+    CPATH_CHECK(outcome.indeterminate() ==
+                (outcome.primary_code() == cp::ErrorCode::kSearchBudgetExceeded));
+    CPATH_CHECK(outcome.search_expansions <= 32u);
+  }
+
+  // A starved ENUMERATION budget is not a failure: the heuristic pool still
+  // produces a valid plan, and the outcome records that optimality is unproven.
+  {
+    // Four grid steps apart, so the policy's hop limit is comfortably met and
+    // the request is genuinely satisfiable.
+    std::vector<std::pair<std::size_t, std::size_t>> near = {{0, 0}, {0, 4}};
+    cp::RequestSpec spec = make_grid(64, 64, near);
+    spec.collective.id = cp::CollectiveId{"starved-enumeration"};
+    spec.policy.max_hops = 8;
+    auto request = cp::build_request(std::move(spec));
+    CPATH_REQUIRE(request.has_value());
+    cp::PlannerLimits limits;
+    limits.max_enumeration_steps = 1;
+    limits.max_total_enumeration_steps = 1;
+    const cp::PlanningOutcome outcome = cp::plan_collective(request.value(), limits);
+    std::printf("SYNTHETIC scale starved enumeration: ok=%d optimal=%d paths=%zu enumeration=%zu\n",
+                outcome.ok() ? 1 : 0, outcome.optimal ? 1 : 0,
+                outcome.ok() ? outcome.plan->stats.path_count : 0u, outcome.enumeration_steps);
+    CPATH_CHECK(outcome.ok());
+    if (outcome.ok()) {
+      CPATH_CHECK_EQ(cp::validate_plan(*outcome.plan, request.value()).is_ok(), true);
+      CPATH_CHECK(!outcome.optimal);
+    }
   }
 }
 
@@ -569,10 +601,12 @@ CPATH_TEST(Scale, all_to_all_over_forty_participants_reports_every_logical_edge)
   CPATH_REQUIRE(outcome.ok());
   check_plan_basics(*outcome.plan, request.value(), "alltoall");
   std::printf("SYNTHETIC scale all-to-all: participants=%zu nodes=%zu edges=%zu logical_edges=%zu paths=%zu "
-              "hops=%zu expansions=%zu wall=%.1f ms\n",
+              "hops=%zu expansions=%zu enumeration=%zu combinations=%zu global_nodes=%zu optimal=%d "
+              "wall=%.1f ms\n",
               kLeaves, request.value().fabric.node_count(), request.value().fabric.edge_count(),
               outcome.plan->stats.logical_edge_count, outcome.plan->stats.path_count,
-              outcome.plan->stats.hop_count, outcome.search_expansions, elapsed);
+              outcome.plan->stats.hop_count, outcome.search_expansions, outcome.enumeration_steps,
+              outcome.combination_steps, outcome.global_search_nodes, outcome.optimal ? 1 : 0, elapsed);
 
   CPATH_CHECK_EQ(outcome.plan->stats.logical_edge_count, kExpectedLogicalEdges);
   CPATH_CHECK_EQ(outcome.plan->stats.path_count, kExpectedLogicalEdges);

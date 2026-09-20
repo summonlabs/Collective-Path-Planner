@@ -4,6 +4,7 @@
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 add_library(cpath_test_support STATIC
+  support/exact_solver.cpp
   support/fixtures.cpp
   support/process.cpp
   support/test_framework.cpp)
@@ -17,6 +18,8 @@ set(CPATH_TEST_SUITES
   unit
   property
   adversarial
+  algorithm
+  reference
   persistence
   protocol
   concurrency

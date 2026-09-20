@@ -660,21 +660,65 @@ CPATH_TEST(adversarial, stale_topology_generation_invalidates_a_previous_plan) {
               validation.code() == ErrorCode::kGenerationRegression);
 }
 
-CPATH_TEST(adversarial, search_budget_exhaustion_is_reported_not_ignored) {
+CPATH_TEST(adversarial, search_budget_exhaustion_is_reported_as_indeterminate) {
   cpath_test::SyntheticParams params;
   params.participants = 8;
   params.spine_count = 2;
   params.rack_count = 4;
   cpath::RequestSpec spec = cpath_test::make_ring_spec(params);
+  // Starve every budget the planner has, so it can neither enumerate nor search.
   spec.policy.max_search_expansions = 1;
   auto request = cpath::build_request(std::move(spec));
   CPATH_REQUIRE(request.has_value());
-  const PlanningOutcome outcome = cpath::plan_collective(request.value());
+
+  cpath::PlannerLimits limits;
+  limits.max_enumeration_steps = 1;
+  limits.max_total_enumeration_steps = 1;
+  const PlanningOutcome outcome = cpath::plan_collective(request.value(), limits);
+
   CPATH_CHECK(!outcome.ok());
   CPATH_CHECK(!outcome.plan.has_value());
   CPATH_REQUIRE(!outcome.denials.empty());
-  CPATH_CHECK(outcome.denials.front().code == ErrorCode::kSearchBudgetExceeded ||
-              outcome.denials.front().code == ErrorCode::kNoPath);
+  // The result is INDETERMINATE. It must never claim that no mapping exists:
+  // failing to find a solution is not proof that there is none.
+  CPATH_CHECK(outcome.indeterminate());
+  CPATH_CHECK(!outcome.proven_infeasible());
+  CPATH_CHECK_EQ(static_cast<int>(outcome.primary_code()),
+                 static_cast<int>(ErrorCode::kSearchBudgetExceeded));
+  CPATH_CHECK_EQ(static_cast<int>(outcome.primary_kind()),
+                 static_cast<int>(cpath::DenialKind::kSearchLimitReached));
+  CPATH_CHECK(outcome.search_expansions <= 1u);
+  CPATH_CHECK(outcome.enumeration_steps <= 1u);
+}
+
+CPATH_TEST(adversarial, enumeration_exhaustion_never_withdraws_a_feasible_plan) {
+  // Running out of enumeration budget costs PROOF strength, never feasibility:
+  // the heuristic pool still finds a mapping, and the outcome says that the
+  // result is not proven optimal.
+  cpath_test::SyntheticParams params;
+  params.participants = 4;
+  params.spine_count = 2;
+  params.rack_count = 2;
+  cpath::RequestSpec spec = cpath_test::make_ring_spec(params);
+  auto request = cpath::build_request(std::move(spec));
+  CPATH_REQUIRE(request.has_value());
+
+  cpath::PlannerLimits limits;
+  limits.max_enumeration_steps = 1;
+  limits.max_total_enumeration_steps = 1;
+  const PlanningOutcome starved = cpath::plan_collective(request.value(), limits);
+  CPATH_CHECK(starved.ok());
+  if (starved.ok()) {
+    CPATH_CHECK(cpath::validate_plan(*starved.plan, request.value()).is_ok());
+    CPATH_CHECK(!starved.optimal);
+  }
+
+  // The same request with a full budget is proven optimal and must agree.
+  const PlanningOutcome full = cpath::plan_collective(request.value());
+  CPATH_CHECK(full.ok());
+  if (full.ok() && starved.ok()) {
+    CPATH_CHECK(full.plan->stats.total_cost <= starved.plan->stats.total_cost);
+  }
 }
 
 CPATH_TEST(adversarial, huge_latency_saturates_instead_of_wrapping) {

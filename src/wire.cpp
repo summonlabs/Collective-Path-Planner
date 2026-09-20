@@ -35,12 +35,10 @@ constexpr std::size_t kMaxLabelBytes = 128;
 constexpr std::uint8_t kMaxFreshness = static_cast<std::uint8_t>(PlanFreshness::kUnverified);
 constexpr std::uint8_t kMaxConflict = static_cast<std::uint8_t>(ConflictKind::kStructure);
 
-// ErrorCode bands are dense inside each documented range, so membership is a
-// set of range tests rather than a table.
-bool is_known_error_code(std::uint32_t raw) noexcept {
-  return raw <= 17u || (raw >= 100u && raw <= 111u) || (raw >= 200u && raw <= 220u) ||
-         (raw >= 300u && raw <= 312u) || (raw >= 400u && raw <= 418u) || (raw >= 900u && raw <= 904u);
-}
+// Membership is answered by the library's own code table, not by a second copy
+// of the numeric ranges: a newly added ErrorCode is accepted by the transport
+// the moment it exists, and a value that names nothing is still refused.
+bool is_known_error_code(std::uint32_t raw) noexcept { return is_defined_error_code(raw); }
 
 Status unknown_enum(const char* field, std::uint32_t value) {
   return Status::error(ErrorCode::kInvalidSyntax,
@@ -112,6 +110,7 @@ Status read_bytes(ByteReader& reader, std::vector<std::uint8_t>& out, std::size_
 
 void encode_denial(const DenialPayload& value, ByteWriter& writer) {
   writer.u16(value.code);
+  writer.u8(value.kind);
   writer.u8(value.conflict);
   writer.u64(value.logical_edge);
   writer.string(value.participant);
@@ -122,6 +121,12 @@ Status decode_denial(ByteReader& reader, DenialPayload& out) {
   DenialPayload value;
   if (Status status = read_error_code(reader, value.code); !status.is_ok()) {
     return status;
+  }
+  if (Status status = reader.u8(value.kind); !status.is_ok()) {
+    return status;
+  }
+  if (value.kind > static_cast<std::uint8_t>(DenialKind::kUnsupportedConstraint)) {
+    return Status::error(ErrorCode::kInvalidSyntax, "denial kind is outside the defined range");
   }
   if (Status status = read_conflict(reader, value.conflict); !status.is_ok()) {
     return status;

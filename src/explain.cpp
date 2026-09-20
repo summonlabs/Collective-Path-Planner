@@ -143,9 +143,16 @@ std::string explain_denials(const PlanningOutcome& outcome) {
     out += "planning succeeded; no denials\n";
     return out;
   }
-  out += "planning refused: " + std::to_string(outcome.denials.size()) + " denial(s)\n";
+  out += "planning refused: " + std::to_string(outcome.denials.size()) + " denial(s)";
+  out += outcome.indeterminate() ? "; the search stopped at a declared bound, so this is INDETERMINATE and is "
+                                   "not a claim that no mapping exists"
+                                 : "; every denial above is conclusive for the constraint it names";
+  out += "\n";
   for (const DenialDetail& denial : outcome.denials) {
     out += "  " + std::string(code_symbol(denial.code)) + " (" + to_string(denial.code) + ")";
+    // The category is what tells a reader whether this is a proof, a malformed
+    // request, or a search that stopped before deciding.
+    out += " kind=" + std::string(to_string(denial.kind));
     out += " conflict=" + std::string(to_string(denial.conflict));
     if (denial.logical_edge.valid()) {
       out += " logical-edge=" + std::to_string(denial.logical_edge.value());
@@ -311,6 +318,18 @@ std::string render_outcome_json(const PlanningOutcome& outcome) {
   append_key(out, "search_expansions");
   out += std::to_string(outcome.search_expansions);
   out += ",";
+  append_key(out, "enumeration_steps");
+  out += std::to_string(outcome.enumeration_steps);
+  out += ",";
+  append_key(out, "indeterminate");
+  out += outcome.indeterminate() ? "true" : "false";
+  out += ",";
+  append_key(out, "proven_infeasible");
+  out += outcome.proven_infeasible() ? "true" : "false";
+  out += ",";
+  append_key(out, "optimal");
+  out += outcome.optimal ? "true" : "false";
+  out += ",";
   append_key(out, "denials");
   out += "[";
   for (std::size_t index = 0; index < outcome.denials.size(); ++index) {
@@ -321,6 +340,9 @@ std::string render_outcome_json(const PlanningOutcome& outcome) {
     out += "{";
     append_key(out, "code");
     append_json_string(out, code_symbol(denial.code));
+    out += ",";
+    append_key(out, "kind");
+    append_json_string(out, to_string(denial.kind));
     out += ",";
     append_key(out, "conflict");
     append_json_string(out, to_string(denial.conflict));

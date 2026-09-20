@@ -47,6 +47,12 @@ inline constexpr std::size_t kMaxHierarchyLevels = 8;
 inline constexpr std::size_t kMaxCandidatePaths = 16;
 // Hard ceiling on planner search work per request, independent of graph size.
 inline constexpr std::size_t kMaxSearchExpansions = 1u << 24;
+// Hard ceilings on the completeness-oriented search bounds. Reaching one of
+// these produces an INDETERMINATE result, never an infeasibility claim.
+inline constexpr std::size_t kMaxExhaustivePaths = 512;
+inline constexpr std::size_t kMaxCombinationSteps = 1u << 22;
+inline constexpr std::size_t kMaxSetAlternatives = 64;
+inline constexpr std::size_t kMaxGlobalSearchNodes = 1u << 24;
 
 // Scoring bounds. Costs saturate below this value; nothing wraps.
 inline constexpr std::uint64_t kCostCeiling = (1ull << 62);

@@ -143,6 +143,11 @@ enum class ErrorCategory : std::uint8_t {
 
 ErrorCategory category_of(ErrorCode code) noexcept;
 
+// True when the raw value names a defined ErrorCode. Derived from the same table
+// that renders codes, so a newly added enumerator can never be rejected by a
+// stale copy of the numeric ranges somewhere else in the library.
+bool is_defined_error_code(std::uint32_t raw) noexcept;
+
 // A deterministic error value: stable code plus a bounded human detail.
 class Status {
  public:

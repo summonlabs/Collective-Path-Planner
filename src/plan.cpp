@@ -471,6 +471,12 @@ Status validate_plan(const Plan& plan, const PlanningRequest& request) {
       return Status::error(ErrorCode::kCostLimitExceeded, "plan path exceeds the cost limit");
     }
 
+    // Every emitted path must be SIMPLE: no physical node and no physical edge
+    // may appear twice. This is re-derived from the hops, not taken on trust.
+    if (!hops_are_simple(path.hops)) {
+      return Status::error(ErrorCode::kInconsistentMetadata,
+                           "plan path is not simple: it revisits a physical node or edge");
+    }
     if (path.hops.empty()) {
       if (!(source_binding->node == target_binding->node)) {
         return Status::error(ErrorCode::kInconsistentMetadata,
@@ -651,6 +657,20 @@ Status validate_plan(const Plan& plan, const PlanningRequest& request) {
       for (const Hop& hop : path.hops) {
         recomputed[hop.edge] = saturating_add(recomputed[hop.edge], per_path, kCostCeiling);
       }
+    }
+  }
+  // Every allocation entry must name a distinct physical edge, so an alias or a
+  // repeated entry cannot hide a double commitment behind two names.
+  {
+    std::vector<EdgeId> allocation_edges;
+    allocation_edges.reserve(plan.allocations.size());
+    for (const Allocation& allocation : plan.allocations) {
+      allocation_edges.push_back(allocation.edge);
+    }
+    std::sort(allocation_edges.begin(), allocation_edges.end());
+    if (std::adjacent_find(allocation_edges.begin(), allocation_edges.end()) != allocation_edges.end()) {
+      return Status::error(ErrorCode::kInconsistentMetadata,
+                           "plan allocation table names the same physical edge twice");
     }
   }
   if (recomputed.size() != plan.allocations.size()) {

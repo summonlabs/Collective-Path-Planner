@@ -289,6 +289,167 @@ Sequence numbers advance strictly within a session; a repeat or a regression is
 refused as a replay. Identity comes from the session envelope the coordinator
 assigned, never from a client-supplied field.
 
+## 9. The algorithmic contract, in full
+
+This section is the authoritative statement of what the planner solves and what
+it can prove. It exists because "I did not find a mapping" and "there is no
+mapping" are different results, and a planner that conflates them is unsafe to
+build on.
+
+### 9.1 The supported problem class
+
+Given a directed multigraph (the physical fabric), a set of logical edges, an
+endpoint binding per participant and a policy, choose for every logical edge a
+set of `paths_per_logical_edge` **simple** paths between its bound endpoints such
+that every hard constraint holds:
+
+| Constraint | Meaning |
+| --- | --- |
+| hop limit | at most `policy.max_hops` hops per path |
+| static eligibility | the edge is eligible, its tier is not forbidden, it is inside the allowed tier set when one is declared, its failure domain and none of its ancestors is forbidden, and its evidence meets the policy floor |
+| endpoint binding | every hop satisfies the allowed failure domains and allowed tiers of **both** bindings of the logical edge; an allowed domain contains a hop domain when the hop domain is that domain or a descendant of it |
+| demand fit | every hop of a path for logical edge *e* has at least *d(e)* = ceil(demand / k) of verified spare capacity, where spare is `capacity_mbps - reserved_mbps` |
+| capacity coherence | for every physical edge the total demand the whole request places on it does not exceed its verified spare capacity |
+| disjointness | `kEdge`: no two sibling paths share a physical edge; `kNode`: no two sibling paths share an interior node |
+| domain diversity | when required, sibling failure-domain signatures are pairwise disjoint |
+| cost ceiling | every path cost is at most `policy.max_path_cost` |
+
+Sibling paths are **distinct**: a path set is a set, so the same physical route
+cannot be chosen twice. Two identical siblings would not divide the demand across
+any independent resource, so a request that asks for more sibling paths than the
+fabric can distinguish is refused rather than satisfied with copies.
+
+A path is a **simple path**: no physical node and no physical edge appears twice.
+The hop-limited search orders its frontier by `(cost, hops, node)` and returns on
+the first pop of the target, and a walk that repeats a node contains a cycle
+whose removal keeps the cost the same or lower while strictly reducing the hop
+count, contradicting minimality. The planner also checks simplicity explicitly
+when it materialises a candidate, and `validate_plan` re-derives it from the
+emitted hops.
+
+Zero verified capacity is never capacity. An edge with `capacity_mbps == 0` is
+usable only when the policy sets `allow_unverified_capacity`, and never when an
+adjacent authority has already claimed a reservation on it. Such an edge carries
+no capacity-checked footprint, so the plan reports a zero bottleneck for any path
+that depends on it and records `kUnknown` in its weakest-evidence label.
+
+### 9.2 The objective
+
+The planner minimises a lexicographic objective. The same total order is used for
+partial comparisons, so nothing depends on container iteration, hash order,
+thread scheduling or the order in which candidates happened to be discovered.
+
+1. satisfy every hard constraint;
+2. minimise the total path cost - the sum, over all chosen paths of all logical
+   edges, of the path cost, where a path cost is the saturating sum of its edge
+   costs and an edge cost is `latency_micros * latency_weight_milli / 1000` plus
+   `congestion_weight_milli * utilisation / (1000 - utilisation)`, with utilisation
+   taken from the capacity **adjacent authorities have already committed**;
+3. minimise the number of sibling pairs that are not failure-domain independent
+   (only ever non-zero when diversity is `preferred`, because `required` is a
+   hard constraint);
+4. minimise the largest single path cost;
+5. maximise the smallest remaining verified capacity headroom;
+6. break remaining ties by the canonical path encoding - the concatenation, in
+   canonical logical-edge order, of each chosen path's sequence of hop edge
+   indices, compared lexicographically.
+
+Because the cost of an edge depends only on evidence supplied by adjacent
+authorities and never on this request's own commitments, candidate generation
+for one logical edge is completely independent of every other logical edge.
+
+### 9.3 Completeness boundary
+
+Per logical edge the planner enumerates simple paths **by increasing hop count**
+and records whether the enumeration ran to completion. It is complete for a
+logical edge when:
+
+* the enumeration completed, so the path set is every feasible simple path; and
+* the k-subset enumeration over that set completed within its budget.
+
+Across the request it is complete when every logical edge was complete and the
+global capacity-coherent assignment search ran to exhaustion.
+
+`PlanningOutcome::optimal` reports that. When it is true, the chosen mapping is
+provably the minimum of the objective above. When it is false the mapping is
+still valid, still deterministic, and still byte-identical for identical inputs -
+it is simply not claimed to be optimal.
+
+### 9.4 What INFEASIBLE means
+
+`DenialKind` separates the outcomes:
+
+| Kind | Meaning |
+| --- | --- |
+| `kInvalidRequest` | the request is malformed or self-contradictory |
+| `kStaleInput` | the request's generations do not authorise a plan |
+| `kProvenInfeasible` | **no mapping exists**, and that has been proven |
+| `kSearchLimitReached` | the search stopped at a declared bound: INDETERMINATE |
+| `kUnsupportedConstraint` | a mode this planner does not implement |
+
+Infeasibility is only ever claimed from an argument that holds for **all**
+constraints at once, never from the failure of a bounded search:
+
+* the destination is unreachable under the policy - proven by breadth-first
+  reachability over exactly the same edge filters the search uses;
+* the reachable distance exceeds `max_hops` - proven by the same breadth-first
+  search, which computes the minimum hop count exactly;
+* a disjointness requirement exceeds what the fabric admits - proven by a
+  unit-capacity max-flow (on a node-split graph for node-disjointness) that
+  accounts for the policy's filters, the endpoint bindings and the demand fit;
+* every route out of the source is removed by one identifiable filter - reported
+  as the narrowest filter that did the work, not as a union of causes;
+* an exhaustive path set admits no k-subset satisfying disjointness, required
+  domain diversity and the per-set capacity fit;
+* an exhaustive assignment search finds no globally capacity-coherent choice.
+
+Every other failure to find a mapping is reported as `kSearchLimitReached` with
+`ErrorCode::kSearchBudgetExceeded`. It names the constraint class that blocked
+progress so an operator still knows what to relax, but it does not claim that no
+mapping exists.
+
+A denial never carries a plan. `PlanningOutcome::proven_infeasible()` is true only
+when every denial in the outcome is conclusive, and
+`PlanningOutcome::indeterminate()` is true as soon as any denial is a search
+limit.
+
+### 9.5 Capacity decisions are global, not greedy
+
+Earlier revisions committed per-path demand as they walked the logical edges in
+canonical order, so adding an unrelated physical edge could change which route an
+early logical edge picked and thereby withdraw a later one. The planner now:
+
+1. generates each logical edge's candidate sets against the fabric's spare
+   capacity only, never against this request's own prior commitments, so
+   candidate generation is independent of logical-edge ordering;
+2. takes each logical edge's individually optimal set and checks the union; if it
+   fits, that assignment is the global optimum and is returned immediately;
+3. otherwise searches the product of the per-logical-edge alternatives, best
+   first, pruning every branch that would exceed any edge's spare capacity, and
+   returns the best assignment found.
+
+Consequently, adding usable unconstrained fabric resources cannot turn a feasible
+request into an infeasibility claim: the richer fabric either yields a plan, or
+the search that could not decide says so. A richer fabric may still yield a
+*different* valid plan, and a bounded global search may return
+`kSearchLimitReached` rather than the optimum; neither is a false denial.
+
+### 9.6 What validate_plan proves independently
+
+`validate_plan` does not replay planner assumptions. From the request alone it
+re-derives: the plan's identity and its bound generations; that every logical
+edge of the collective is present with exactly the required number of paths; that
+each path is simple, contiguous, starts and ends at the bound endpoints, and
+stays inside the hop and cost ceilings; that every hop names an existing physical
+edge with matching direction; that no forbidden node, tier or failure domain
+appears; that the evidence floor, the allowed tier set and both endpoint bindings
+hold on every hop; that sibling paths satisfy the disjointness mode and, when
+required, are failure-domain independent; that the failure-domain signature of
+each path is exactly what its hops imply; that the allocation table follows from
+the paths, names each physical edge at most once, and never exceeds verified
+spare capacity; and that every recorded statistic matches the paths it
+summarises.
+
 ## 8. Explicit non-claims
 
 * No path produced by this library has been validated on physical hardware. The

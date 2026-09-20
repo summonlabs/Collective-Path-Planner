@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(CollectivePathPlanner
-  VERSION 1.0.0
+  VERSION 1.0.1
   DESCRIPTION "Vendor-neutral C++20 planner for mapping collective communication structures onto generation-bound physical network fabrics"
   HOMEPAGE_URL "https://github.com/summonlabs/Collective-Path-Planner"
   LANGUAGES CXX)

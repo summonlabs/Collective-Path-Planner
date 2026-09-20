@@ -135,6 +135,10 @@ struct PlanRequestPayload {
 
 struct DenialPayload {
   std::uint16_t code{0};
+  // DenialKind: whether this denial is a proof that no mapping exists, an
+  // invalid request, or an INDETERMINATE search-limit result. A consumer must
+  // not have to re-derive that distinction from the code.
+  std::uint8_t kind{0};
   std::uint8_t conflict{0};
   std::uint64_t logical_edge{0};
   std::string participant{};

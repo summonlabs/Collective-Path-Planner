@@ -578,7 +578,8 @@ int command_rpc(const Arguments& arguments) {
         std::cerr << "planning refused by coordinator: code "
                   << cpath::code_symbol(static_cast<cpath::ErrorCode>(response.value().code)) << "\n";
         for (const cpath::DenialPayload& denial : response.value().denials) {
-          std::cerr << "  " << cpath::code_symbol(static_cast<cpath::ErrorCode>(denial.code)) << " conflict "
+          std::cerr << "  " << cpath::code_symbol(static_cast<cpath::ErrorCode>(denial.code)) << " "
+                    << cpath::to_string(static_cast<cpath::DenialKind>(denial.kind)) << " conflict "
                     << denial.conflict << " logical-edge " << denial.logical_edge << " " << denial.message
                     << "\n";
         }

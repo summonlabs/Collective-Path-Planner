@@ -484,6 +484,9 @@ Status Coordinator::Impl::handle_frame(Session& session, const Frame& frame, boo
         response.code = static_cast<std::uint16_t>(parsed.status().code());
         DenialPayload denial;
         denial.code = static_cast<std::uint16_t>(parsed.status().code());
+        denial.kind = static_cast<std::uint8_t>(
+            category_of(parsed.status().code()) == ErrorCategory::kAuthority ? DenialKind::kStaleInput
+                                                                            : DenialKind::kInvalidRequest);
         denial.message = parsed.status().detail();
         response.denials.push_back(std::move(denial));
         if (payload.include_explanation) {
@@ -509,9 +512,12 @@ Status Coordinator::Impl::handle_frame(Session& session, const Frame& frame, boo
           if (store != nullptr) {
             auto stored = store->put(plan, parsed.value());
             if (!stored.has_value()) {
-              response.denials.push_back(DenialPayload{
-                  static_cast<std::uint16_t>(stored.status().code()), 0u, 0u, std::string(),
-                  "the plan was produced but could not be persisted: " + stored.status().to_string()});
+              DenialPayload persist_failure;
+              persist_failure.code = static_cast<std::uint16_t>(stored.status().code());
+              persist_failure.kind = static_cast<std::uint8_t>(DenialKind::kUnsupportedConstraint);
+              persist_failure.message =
+                  "the plan was produced but could not be persisted: " + stored.status().to_string();
+              response.denials.push_back(std::move(persist_failure));
               bump(1u, &ServerStats::errors);
             }
           }
@@ -527,6 +533,7 @@ Status Coordinator::Impl::handle_frame(Session& session, const Frame& frame, boo
             const DenialDetail& denial = outcome.denials[index];
             DenialPayload entry;
             entry.code = static_cast<std::uint16_t>(denial.code);
+            entry.kind = static_cast<std::uint8_t>(denial.kind);
             entry.conflict = static_cast<std::uint8_t>(denial.conflict);
             entry.logical_edge = denial.logical_edge.value();
             entry.participant = denial.participant.value();
