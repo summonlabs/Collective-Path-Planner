@@ -4,7 +4,7 @@ Open-source, vendor-neutral C++20 planner for mapping collective communication
 structures onto generation-bound physical network fabrics under topology,
 failure-domain, bandwidth, latency, congestion and policy constraints.
 
-**1.0.0**
+**1.0.1**
 
 ## What this is
 
