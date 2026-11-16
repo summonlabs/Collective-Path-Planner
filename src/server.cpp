@@ -117,6 +117,13 @@ struct Coordinator::Impl {
     std::condition_variable not_full{};
     std::deque<Frame> inbox{};
     bool reader_done{false};
+    // Set by the worker when it stops taking frames, under the session mutex,
+    // so a reader waiting for room in the inbox is not left waiting.
+    bool worker_done{false};
+    // Each thread sets its flag as the last thing it does with the session.
+    // Both set means the session has ended and may be retired.
+    std::atomic<bool> reader_exited{false};
+    std::atomic<bool> worker_exited{false};
     bool handshaken{false};
     bool has_sequence{false};
     std::uint64_t last_sequence{0};
@@ -167,6 +174,7 @@ struct Coordinator::Impl {
   bool stopping_now() const { return stopping.load(std::memory_order_acquire); }
 
   void request_stop();
+  void retire_ended_sessions();
   void accept_loop();
   void start_session_threads(Session& session);
   void reader_loop(Session& session);
@@ -183,8 +191,43 @@ void Coordinator::Impl::request_stop() {
   }
 }
 
+// Retires every session whose two threads have ended. Without this an ended
+// session kept its slot until the coordinator stopped, so the session limit
+// bounded the sessions of a lifetime instead of the concurrent ones and a
+// long-running coordinator eventually refused every new client. Only the
+// acceptor thread calls this, and teardown runs after that thread is joined.
+void Coordinator::Impl::retire_ended_sessions() {
+  std::vector<std::unique_ptr<Session>> ended;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex);
+    for (auto it = sessions.begin(); it != sessions.end();) {
+      if ((*it)->reader_exited.load(std::memory_order_acquire) &&
+          (*it)->worker_exited.load(std::memory_order_acquire)) {
+        ended.push_back(std::move(*it));
+        it = sessions.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    bump_locked(static_cast<std::uint64_t>(ended.size()), &ServerStats::sessions_closed);
+  }
+  // Joining and closing happen with no lock held. Both threads are past their
+  // last use of the session, so the joins return at once.
+  for (const std::unique_ptr<Session>& session : ended) {
+    if (session->reader.joinable()) {
+      session->reader.join();
+    }
+    if (session->worker.joinable()) {
+      session->worker.join();
+    }
+    session->socket.close();
+    session->wakeup.close();
+  }
+}
+
 void Coordinator::Impl::accept_loop() {
   while (!stopping_now()) {
+    retire_ended_sessions();
     auto ready = internal::wait_readable(listener, &acceptor_wakeup.reader());
     if (!ready.has_value()) {
       if (stopping_now()) {
@@ -206,6 +249,7 @@ void Coordinator::Impl::accept_loop() {
       continue;
     }
 
+    retire_ended_sessions();
     auto session = std::make_unique<Session>();
     session->socket = std::move(accepted.value());
     if (Status status = session->wakeup.open(); !status.is_ok()) {
@@ -298,9 +342,9 @@ void Coordinator::Impl::reader_loop(Session& session) {
     {
       std::unique_lock<std::mutex> lock(session.mutex);
       session.not_full.wait(lock, [&] {
-        return session.inbox.size() < config.max_queue_depth || stopping_now();
+        return session.inbox.size() < config.max_queue_depth || stopping_now() || session.worker_done;
       });
-      if (stopping_now()) {
+      if (stopping_now() || session.worker_done) {
         break;
       }
       session.inbox.push_back(std::move(frame.value()));
@@ -317,9 +361,13 @@ void Coordinator::Impl::reader_loop(Session& session) {
   session.not_full.notify_all();
   if (!stopping_now()) {
     // A retired session releases its peer immediately: the client sees an
-    // orderly close instead of silence. The handle itself is closed during
-    // teardown, after both threads have exited.
+    // orderly close instead of silence. The handle itself is closed once
+    // both threads have exited.
     (void)session.socket.shutdown_both();
+  }
+  session.reader_exited.store(true, std::memory_order_release);
+  if (!stopping_now()) {
+    (void)acceptor_wakeup.signal();
   }
 }
 
@@ -361,8 +409,21 @@ void Coordinator::Impl::worker_loop(Session& session) {
       break;
     }
   }
+  {
+    std::lock_guard<std::mutex> lock(session.mutex);
+    session.worker_done = true;
+  }
   session.not_empty.notify_all();
   session.not_full.notify_all();
+  if (!stopping_now()) {
+    // Nothing will answer this session any more. Its reader is released from
+    // the socket it may still be waiting on, so the session ends as a whole.
+    (void)session.socket.shutdown_both();
+  }
+  session.worker_exited.store(true, std::memory_order_release);
+  if (!stopping_now()) {
+    (void)acceptor_wakeup.signal();
+  }
 }
 
 Status Coordinator::Impl::handle_frame(Session& session, const Frame& frame, bool& request_shutdown) {

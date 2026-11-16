@@ -492,4 +492,32 @@ CPATH_TEST(concurrency_accounting, counters_close_after_the_final_stop) {
   open_at_stop.close();
 }
 
+CPATH_TEST(concurrency_limits, a_session_that_ended_frees_its_slot) {
+  cpath::ServerConfig config = loopback_config();
+  config.max_sessions = 2u;
+  cpath::Coordinator coordinator(config);
+  CPATH_REQUIRE(coordinator.start().is_ok());
+  const std::uint16_t port = coordinator.port();
+
+  // Three times as many clients as the limit, but never more than one at a
+  // time: the limit bounds concurrent sessions, not the sessions of a lifetime.
+  for (std::uint64_t round = 1; round <= 6u; ++round) {
+    cpath::ServiceClient client;
+    CPATH_REQUIRE(client.connect("127.0.0.1", port).is_ok());
+    CPATH_REQUIRE(client.handshake("sequential").has_value());
+    CPATH_CHECK(client.ping().is_ok());
+    client.close();
+    // The coordinator observes the close on the session's own threads and then
+    // retires the session; the next client must find the slot free.
+    CPATH_REQUIRE(wait_until([&] { return coordinator.stats().sessions_closed >= round; }, 1000u));
+  }
+  const cpath::ServerStats served = coordinator.stats();
+  CPATH_CHECK_EQ(served.sessions_accepted, 6u);
+  CPATH_CHECK_EQ(served.sessions_rejected, 0u);
+
+  CPATH_REQUIRE(coordinator.stop().is_ok());
+  const cpath::ServerStats after = coordinator.stats();
+  CPATH_CHECK_EQ(after.sessions_closed, after.sessions_accepted);
+}
+
 int main(int argc, char** argv) { return cpath_test::Registry::instance().run(argc, argv); }

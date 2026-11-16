@@ -563,10 +563,32 @@ Status PlanStore::open() {
     impl_->incarnation = Incarnation{1};
     impl_->sequence = 0;
   }
-  if (Status status = impl_->persist_meta(); !status.is_ok()) {
+  if (Status status = impl_->rebuild_index(); !status.is_ok()) {
     return status;
   }
-  if (Status status = impl_->rebuild_index(); !status.is_ok()) {
+  // The metadata is written after the record it accounts for, so a process
+  // that died between the two left a record ahead of it; and a store whose
+  // metadata was lost starts counting from nothing. Neither may let a fence
+  // fall behind what the records on disk show: a sequence number that a record
+  // carries is spent, and so is an incarnation a record was written under.
+  std::uint64_t highest_incarnation = 0;
+  for (const auto& item : impl_->index) {
+    if (item.second.summary.stored_sequence > impl_->sequence) {
+      impl_->sequence = item.second.summary.stored_sequence;
+    }
+    if (item.second.summary.written_incarnation.value() > highest_incarnation) {
+      highest_incarnation = item.second.summary.written_incarnation.value();
+    }
+  }
+  if (highest_incarnation >= impl_->incarnation.value()) {
+    impl_->incarnation = Incarnation{highest_incarnation + 1u};
+  }
+  // Epoch and incarnation start together and advance together.
+  if (impl_->epoch.value() < impl_->incarnation.value()) {
+    impl_->epoch = Epoch{impl_->incarnation.value()};
+  }
+  if (Status status = impl_->persist_meta(); !status.is_ok()) {
+    impl_->index.clear();
     return status;
   }
   impl_->open = true;

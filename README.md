@@ -290,9 +290,9 @@ ctest --test-dir build/release --output-on-failure
 ./build/release/tests/cpath_tests_property --seed=7 --verbose
 ```
 
-A randomized failure prints the seed that produced it. 166 tests are registered
+A randomized failure prints the seed that produced it. 168 tests are registered
 across the eleven suites (unit 47, adversarial 25, protocol 21, algorithm 18,
-persistence 11, integration 9, property 8, concurrency 8, multiprocess 8,
+persistence 12, integration 9, property 8, concurrency 9, multiprocess 8,
 reference 6, scale 5), and the whole run takes about 10 seconds in Release.
 
 The reference suite alone drives 3,200 bounded randomized instances through both

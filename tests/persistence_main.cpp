@@ -483,4 +483,55 @@ CPATH_TEST(persistence, reopening_a_store_that_holds_only_the_metadata_is_clean)
   }
 }
 
+CPATH_TEST(persistence, sequence_and_incarnation_never_fall_behind_the_records) {
+  Fixture fixture;
+  const std::filesystem::path meta = std::filesystem::path(fixture.root) / "store.meta";
+  const std::filesystem::path saved_meta = std::filesystem::path(fixture.root) / "store.meta.before-commit";
+  const PlanningRequest first_request = parse_or_fail(request_text(7, 1));
+  const cpath::PlanningOutcome first_plan = cpath::plan_collective(first_request);
+  CPATH_REQUIRE(first_plan.ok());
+  const PlanningRequest second_request = parse_or_fail(request_text(8, 2));
+  const cpath::PlanningOutcome second_plan = cpath::plan_collective(second_request);
+  CPATH_REQUIRE(second_plan.ok());
+
+  StoredPlanSummary first_summary;
+  {
+    PlanStore store(fixture.config());
+    CPATH_REQUIRE(store.open().is_ok());
+    // The metadata as it is before the commit: exactly what is on disk when the
+    // process dies after the record became durable and before the metadata did.
+    std::filesystem::copy_file(meta, saved_meta, std::filesystem::copy_options::overwrite_existing);
+    auto stored = store.put(*first_plan.plan, first_request);
+    CPATH_REQUIRE(stored.has_value());
+    first_summary = stored.value();
+    CPATH_CHECK(store.close().is_ok());
+  }
+  std::filesystem::copy_file(saved_meta, meta, std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::remove(saved_meta);
+  {
+    PlanStore store(fixture.config());
+    CPATH_REQUIRE(store.open().is_ok());
+    auto stored = store.put(*second_plan.plan, second_request);
+    CPATH_REQUIRE(stored.has_value());
+    // The first record is on disk, so its sequence number is spent.
+    CPATH_CHECK(stored.value().stored_sequence > first_summary.stored_sequence);
+    CPATH_CHECK(store.close().is_ok());
+  }
+
+  // With the metadata gone altogether, the store must still run under an
+  // incarnation that no record on disk was written under.
+  std::filesystem::remove(meta);
+  {
+    PlanStore store(fixture.config());
+    CPATH_REQUIRE(store.open().is_ok());
+    auto listed = store.list();
+    CPATH_REQUIRE(listed.has_value());
+    CPATH_CHECK_EQ(listed.value().size(), 2u);
+    for (const StoredPlanSummary& summary : listed.value()) {
+      CPATH_CHECK(store.incarnation().value() > summary.written_incarnation.value());
+    }
+    CPATH_CHECK(store.close().is_ok());
+  }
+}
+
 int main(int argc, char** argv) { return cpath_test::Registry::instance().run(argc, argv); }
