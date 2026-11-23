@@ -187,6 +187,11 @@ struct Coordinator::Impl {
 void Coordinator::Impl::request_stop() {
   if (!stopping.exchange(true, std::memory_order_acq_rel)) {
     (void)acceptor_wakeup.signal();
+    // The reaper tests the flag under state_mutex before it waits. Passing
+    // through that mutex after the flag is set keeps the notification from
+    // falling between the reaper's test and its wait, where it was lost and the
+    // teardown never ran.
+    { std::lock_guard<std::mutex> lock(state_mutex); }
     state_changed.notify_all();
   }
 }
